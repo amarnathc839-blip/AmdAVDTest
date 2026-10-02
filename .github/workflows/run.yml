@@ -1,105 +1,366 @@
-name: ARM64 KVM Test
+name: ARM64 Android Emulator Test
 
 on:
   workflow_dispatch:
 
 jobs:
-  test:
+  arm64-avd:
+    name: ARM64 AVD
     runs-on: ubuntu-24.04-arm
 
     steps:
-      - name: System information
+      # ------------------------------------------------------------
+      # 1. Basic runner information
+      # ------------------------------------------------------------
+      - name: Runner information
         run: |
-          echo "===== OS ====="
-          cat /etc/os-release
+          echo "========================================"
+          echo "        RUNNER INFORMATION"
+          echo "========================================"
+
+          echo "Architecture:"
+          uname -m
 
           echo
-          echo "===== Architecture ====="
-          uname -m
+          echo "Kernel:"
           uname -a
 
           echo
-          echo "===== CPU ====="
+          echo "OS:"
+          cat /etc/os-release
+
+          echo
+          echo "CPU:"
           lscpu
 
-      - name: Check virtualization CPU flags
-        run: |
-          echo "===== CPU virtualization flags ====="
-          lscpu | grep -Ei 'Virtualization|Flags' || true
-
           echo
-          echo "===== /proc/cpuinfo ====="
-          grep -Ei 'Features|Virtualization' /proc/cpuinfo | head -10 || true
+          echo "========================================"
 
-      - name: Check KVM device
+      # ------------------------------------------------------------
+      # 2. Check KVM
+      # ------------------------------------------------------------
+      - name: Check KVM
         run: |
-          echo "===== /dev/kvm ====="
+          echo "========================================"
+          echo "              KVM CHECK"
+          echo "========================================"
 
           if [ -e /dev/kvm ]; then
-            echo "✅ /dev/kvm EXISTS"
+            echo "✅ /dev/kvm exists"
             ls -la /dev/kvm
           else
-            echo "❌ /dev/kvm DOES NOT EXIST"
+            echo "❌ /dev/kvm does NOT exist"
           fi
 
-      - name: Check KVM kernel module
-        run: |
-          echo "===== KVM modules ====="
-          lsmod | grep -i kvm || echo "No KVM module loaded"
+          echo
+          echo "Loaded KVM modules:"
+          lsmod | grep -i kvm || echo "No KVM modules loaded"
 
           echo
-          echo "===== Kernel ====="
-          uname -r
+          echo "========================================"
 
-      - name: Check QEMU
-        run: |
-          echo "===== QEMU ====="
-          qemu-system-aarch64 --version || true
-          qemu-system-x86_64 --version || true
-
-      - name: Install KVM/QEMU packages
+      # ------------------------------------------------------------
+      # 3. Install required packages
+      # ------------------------------------------------------------
+      - name: Install dependencies
         run: |
           sudo apt-get update
 
           sudo apt-get install -y \
-            qemu-system-arm \
-            qemu-utils \
-            cpu-checker \
-            libvirt-daemon-system \
-            libvirt-clients
+            unzip \
+            wget \
+            curl \
+            git \
+            adb \
+            libgl1 \
+            libpulse0 \
+            libx11-6 \
+            libxcb1 \
+            libxcomposite1 \
+            libxcursor1 \
+            libxi6 \
+            libxrandr2 \
+            libnss3 \
+            libxdamage1 \
+            libxfixes3 \
+            libgbm1
 
-      - name: Test KVM after installation
+      # ------------------------------------------------------------
+      # 4. Install Android command line tools
+      # ------------------------------------------------------------
+      - name: Install Android SDK
+        shell: bash
         run: |
-          echo "===== KVM device ====="
-          ls -la /dev/kvm || true
+          set -e
+
+          ANDROID_HOME="$HOME/android-sdk"
+
+          mkdir -p "$ANDROID_HOME/cmdline-tools"
+
+          echo "Downloading Android command line tools..."
+
+          wget -q \
+            https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip \
+            -O /tmp/cmdline-tools.zip
+
+          unzip -q \
+            /tmp/cmdline-tools.zip \
+            -d "$ANDROID_HOME/cmdline-tools"
+
+          mv \
+            "$ANDROID_HOME/cmdline-tools/cmdline-tools" \
+            "$ANDROID_HOME/cmdline-tools/latest"
+
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/emulator" >> "$GITHUB_PATH"
 
           echo
-          echo "===== KVM modules ====="
-          lsmod | grep -i kvm || true
+          echo "Android SDK installed at:"
+          echo "$ANDROID_HOME"
+
+      # ------------------------------------------------------------
+      # 5. Accept Android licenses
+      # ------------------------------------------------------------
+      - name: Accept Android licenses
+        run: |
+          yes | sdkmanager --licenses || true
+
+      # ------------------------------------------------------------
+      # 6. Install emulator + ARM64 system image
+      # ------------------------------------------------------------
+      - name: Install Android emulator
+        run: |
+          set -e
+
+          sdkmanager \
+            "platform-tools" \
+            "emulator" \
+            "platforms;android-35" \
+            "system-images;android-35;google_apis;arm64-v8a"
+
+      # ------------------------------------------------------------
+      # 7. Verify Android tools
+      # ------------------------------------------------------------
+      - name: Verify Android installation
+        run: |
+          echo "========================================"
+          echo "        ANDROID INSTALLATION"
+          echo "========================================"
+
+          adb version
 
           echo
-          echo "===== kvm-ok ====="
-          sudo kvm-ok || true
+          emulator -version
 
-      - name: Test QEMU KVM acceleration
+          echo
+          echo "Installed system images:"
+          sdkmanager --list_installed | grep system-images || true
+
+          echo
+          echo "========================================"
+
+      # ------------------------------------------------------------
+      # 8. Create ARM64 AVD
+      # ------------------------------------------------------------
+      - name: Create ARM64 AVD
         run: |
-          echo "===== QEMU acceleration ====="
+          set -e
 
-          qemu-system-aarch64 \
-            -machine virt,accel=kvm \
-            -cpu host \
-            -display none \
-            -nodefaults \
-            -S \
-            -monitor none \
-            -serial none \
-            -no-reboot \
-            2>&1 || true
+          echo "no" | avdmanager create avd \
+            --force \
+            --name arm64-test \
+            --package "system-images;android-35;google_apis;arm64-v8a" \
+            --device "pixel_6"
 
-      - name: Final summary
+          echo
+          echo "Available AVDs:"
+          emulator -list-avds
+
+      # ------------------------------------------------------------
+      # 9. Display AVD configuration
+      # ------------------------------------------------------------
+      - name: Show AVD configuration
         run: |
-          echo "================================"
-          echo "ARM64: $(uname -m)"
-          echo "KVM:"
-          test -e /dev/kvm && echo "AVAILABLE" || echo "NOT AVAILABLE"
-          echo "================================"
+          echo "========================================"
+          echo "           AVD CONFIGURATION"
+          echo "========================================"
+
+          cat "$HOME/.android/avd/arm64-test.avd/config.ini"
+
+          echo
+          echo "========================================"
+
+      # ------------------------------------------------------------
+      # 10. Start ARM64 emulator WITHOUT KVM
+      # ------------------------------------------------------------
+      - name: Start ARM64 emulator
+        shell: bash
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "       STARTING ARM64 EMULATOR"
+          echo "========================================"
+
+          emulator \
+            -avd arm64-test \
+            -no-window \
+            -no-audio \
+            -no-boot-anim \
+            -no-snapshot \
+            -gpu swiftshader_indirect \
+            -accel off \
+            -verbose \
+            > /tmp/emulator.log 2>&1 &
+
+          EMULATOR_PID=$!
+
+          echo "$EMULATOR_PID" > /tmp/emulator.pid
+
+          echo "Emulator PID: $EMULATOR_PID"
+
+          sleep 15
+
+          echo
+          echo "========================================"
+          echo "          EMULATOR LOG"
+          echo "========================================"
+
+          tail -200 /tmp/emulator.log || true
+
+      # ------------------------------------------------------------
+      # 11. Wait for ADB
+      # ------------------------------------------------------------
+      - name: Wait for emulator
+        shell: bash
+        run: |
+          set -e
+
+          echo "Waiting for ADB device..."
+
+          timeout 300 adb wait-for-device
+
+          echo "ADB device detected."
+
+      # ------------------------------------------------------------
+      # 12. Wait for Android boot
+      # ------------------------------------------------------------
+      - name: Wait for Android boot
+        shell: bash
+        run: |
+          set -e
+
+          echo "Waiting for Android to boot..."
+
+          timeout 600 bash -c '
+            while true; do
+              BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")
+
+              echo "boot_completed=$BOOT"
+
+              if [ "$BOOT" = "1" ]; then
+                break
+              fi
+
+              sleep 5
+            done
+          '
+
+          echo
+          echo "✅ Android boot completed"
+
+      # ------------------------------------------------------------
+      # 13. Verify Android architecture
+      # ------------------------------------------------------------
+      - name: Verify Android architecture
+        run: |
+          echo "========================================"
+          echo "        ANDROID ARCHITECTURE"
+          echo "========================================"
+
+          echo "CPU ABI:"
+          adb shell getprop ro.product.cpu.abi
+
+          echo
+          echo "CPU ABI list:"
+          adb shell getprop ro.product.cpu.abilist
+
+          echo
+          echo "Hardware:"
+          adb shell getprop ro.hardware
+
+          echo
+          echo "Product:"
+          adb shell getprop ro.product.name
+
+          echo
+          echo "Android:"
+          adb shell getprop ro.build.version.release
+
+          echo
+          echo "SDK:"
+          adb shell getprop ro.build.version.sdk
+
+      # ------------------------------------------------------------
+      # 14. Basic emulator test
+      # ------------------------------------------------------------
+      - name: Run Android tests
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "           ANDROID TEST"
+          echo "========================================"
+
+          echo "Connected devices:"
+          adb devices -l
+
+          echo
+          echo "Android uptime:"
+          adb shell uptime
+
+          echo
+          echo "Memory:"
+          adb shell cat /proc/meminfo | head -20
+
+          echo
+          echo "CPU:"
+          adb shell cat /proc/cpuinfo | head -40
+
+          echo
+          echo "Packages:"
+          adb shell pm list packages | head -20
+
+          echo
+          echo "✅ Basic Android test completed"
+
+      # ------------------------------------------------------------
+      # 15. Save emulator logs if something goes wrong
+      # ------------------------------------------------------------
+      - name: Upload emulator logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm64-emulator-logs
+          path: |
+            /tmp/emulator.log
+            /tmp/emulator.pid
+
+      # ------------------------------------------------------------
+      # 16. Stop emulator
+      # ------------------------------------------------------------
+      - name: Stop emulator
+        if: always()
+        run: |
+          if [ -f /tmp/emulator.pid ]; then
+            PID=$(cat /tmp/emulator.pid)
+
+            echo "Stopping emulator PID $PID..."
+
+            kill "$PID" 2>/dev/null || true
+          fi
+
+          adb emu kill 2>/dev/null || true
