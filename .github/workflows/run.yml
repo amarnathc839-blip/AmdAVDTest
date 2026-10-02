@@ -49,7 +49,7 @@ jobs:
               -o ServerAliveCountMax=3 \
               -o ExitOnForwardFailure=yes \
               -N \
-              -R 127.0.0.1:2222:127.0.0.1:22 \
+              -R 0.0.0.0:2222:127.0.0.1:22 \
               root@103.214.23.62 &
 
           echo $! > /tmp/tunnel.pid
