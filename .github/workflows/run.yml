@@ -1,0 +1,105 @@
+name: ARM64 KVM Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - name: System information
+        run: |
+          echo "===== OS ====="
+          cat /etc/os-release
+
+          echo
+          echo "===== Architecture ====="
+          uname -m
+          uname -a
+
+          echo
+          echo "===== CPU ====="
+          lscpu
+
+      - name: Check virtualization CPU flags
+        run: |
+          echo "===== CPU virtualization flags ====="
+          lscpu | grep -Ei 'Virtualization|Flags' || true
+
+          echo
+          echo "===== /proc/cpuinfo ====="
+          grep -Ei 'Features|Virtualization' /proc/cpuinfo | head -10 || true
+
+      - name: Check KVM device
+        run: |
+          echo "===== /dev/kvm ====="
+
+          if [ -e /dev/kvm ]; then
+            echo "✅ /dev/kvm EXISTS"
+            ls -la /dev/kvm
+          else
+            echo "❌ /dev/kvm DOES NOT EXIST"
+          fi
+
+      - name: Check KVM kernel module
+        run: |
+          echo "===== KVM modules ====="
+          lsmod | grep -i kvm || echo "No KVM module loaded"
+
+          echo
+          echo "===== Kernel ====="
+          uname -r
+
+      - name: Check QEMU
+        run: |
+          echo "===== QEMU ====="
+          qemu-system-aarch64 --version || true
+          qemu-system-x86_64 --version || true
+
+      - name: Install KVM/QEMU packages
+        run: |
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            qemu-system-arm \
+            qemu-utils \
+            cpu-checker \
+            libvirt-daemon-system \
+            libvirt-clients
+
+      - name: Test KVM after installation
+        run: |
+          echo "===== KVM device ====="
+          ls -la /dev/kvm || true
+
+          echo
+          echo "===== KVM modules ====="
+          lsmod | grep -i kvm || true
+
+          echo
+          echo "===== kvm-ok ====="
+          sudo kvm-ok || true
+
+      - name: Test QEMU KVM acceleration
+        run: |
+          echo "===== QEMU acceleration ====="
+
+          qemu-system-aarch64 \
+            -machine virt,accel=kvm \
+            -cpu host \
+            -display none \
+            -nodefaults \
+            -S \
+            -monitor none \
+            -serial none \
+            -no-reboot \
+            2>&1 || true
+
+      - name: Final summary
+        run: |
+          echo "================================"
+          echo "ARM64: $(uname -m)"
+          echo "KVM:"
+          test -e /dev/kvm && echo "AVAILABLE" || echo "NOT AVAILABLE"
+          echo "================================"
