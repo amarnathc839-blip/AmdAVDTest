@@ -1,4 +1,4 @@
-name: ARM64 SSH
+name: ARM64 Runner SSH
 
 on:
   workflow_dispatch:
@@ -8,13 +8,104 @@ jobs:
     runs-on: ubuntu-24.04-arm
 
     steps:
-      - name: Runner info
+      - name: Install SSH tools
         run: |
-          uname -a
-          uname -m
-          ls -la /dev/kvm || true
+          sudo apt-get update
+          sudo apt-get install -y openssh-server sshpass
 
-      - name: SSH into runner
-        uses: mxschmitt/action-tmate@v3
-        with:
-          limit-access-to-actor: false
+      - name: Start SSH server on runner
+        run: |
+          sudo mkdir -p /run/sshd
+
+          sudo useradd -m -s /bin/bash runnerdebug || true
+
+          PASSWORD="$(openssl rand -base64 24)"
+          echo "runnerdebug:$PASSWORD" | sudo chpasswd
+
+          echo "RUNNER_PASSWORD=$PASSWORD" >> "$GITHUB_ENV"
+
+          sudo tee /etc/ssh/sshd_config.d/debug.conf > /dev/null <<'EOF'
+          PasswordAuthentication yes
+          PermitRootLogin no
+          AllowUsers runnerdebug
+          EOF
+
+          sudo sshd -t
+          sudo systemctl restart ssh
+
+          echo "Runner SSH server started."
+
+      - name: Create reverse SSH tunnel
+        env:
+          VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
+        run: |
+          set -e
+
+          sshpass -p "$VPS_PASSWORD" \
+            ssh \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              -o ServerAliveInterval=30 \
+              -o ServerAliveCountMax=3 \
+              -o ExitOnForwardFailure=yes \
+              -N \
+              -R 127.0.0.1:2222:127.0.0.1:22 \
+              root@103.214.23.62 &
+
+          echo $! > /tmp/tunnel.pid
+
+          sleep 5
+
+          if kill -0 "$(cat /tmp/tunnel.pid)" 2>/dev/null; then
+            echo "✅ Reverse tunnel established."
+          else
+            echo "❌ Reverse tunnel failed."
+            exit 1
+          fi
+
+      - name: Connection information
+        run: |
+          echo
+          echo "=============================================="
+          echo "       ARM64 GITHUB RUNNER SSH"
+          echo "=============================================="
+          echo
+          echo "Architecture:"
+          uname -m
+          echo
+          echo "KVM:"
+          if [ -e /dev/kvm ]; then
+            echo "AVAILABLE"
+          else
+            echo "NOT AVAILABLE"
+          fi
+          echo
+          echo "Connect from your PC:"
+          echo
+          echo "ssh -p 2222 runnerdebug@103.214.23.62"
+          echo
+          echo "Temporary runner password:"
+          echo "$RUNNER_PASSWORD"
+          echo
+          echo "=============================================="
+
+      - name: Keep runner alive
+        run: |
+          echo "Runner is ready."
+          echo "Waiting for SSH session..."
+
+          while true; do
+            if ! kill -0 "$(cat /tmp/tunnel.pid)" 2>/dev/null; then
+              echo "❌ Reverse tunnel disconnected."
+              exit 1
+            fi
+
+            sleep 30
+          done
+
+      - name: Cleanup
+        if: always()
+        run: |
+          if [ -f /tmp/tunnel.pid ]; then
+            kill "$(cat /tmp/tunnel.pid)" 2>/dev/null || true
+          fi
