@@ -8,43 +8,104 @@ jobs:
     runs-on: ubuntu-24.04-arm
 
     steps:
+
+      # ============================================================
+      # 1. Install SSH server + sshpass
+      # ============================================================
       - name: Install SSH tools
         run: |
           sudo apt-get update
           sudo apt-get install -y openssh-server sshpass
 
-      - name: Start SSH server on runner
+      # ============================================================
+      # 2. Configure SSH server on GitHub ARM64 runner
+      # ============================================================
+      - name: Configure runner SSH
         run: |
+          set -e
+
+          echo "=========================================="
+          echo "CONFIGURING RUNNER SSH"
+          echo "=========================================="
+
           sudo mkdir -p /run/sshd
 
-          sudo useradd -m -s /bin/bash runnerdebug || true
+          # Create debug user
+          if id runnerdebug >/dev/null 2>&1; then
+            echo "runnerdebug already exists"
+          else
+            sudo useradd \
+              --create-home \
+              --shell /bin/bash \
+              runnerdebug
+          fi
 
-          PASSWORD="$(openssl rand -base64 24)"
-          echo "runnerdebug:$PASSWORD" | sudo chpasswd
+          # Fixed password
+          echo 'runnerdebug:33335555' | sudo chpasswd
 
-          echo "RUNNER_PASSWORD=$PASSWORD" >> "$GITHUB_ENV"
+          # Give sudo access
+          sudo usermod -aG sudo runnerdebug
 
+          # Configure SSH
           sudo tee /etc/ssh/sshd_config.d/debug.conf > /dev/null <<'EOF'
           PasswordAuthentication yes
           PermitRootLogin no
           AllowUsers runnerdebug
           EOF
 
+          # Validate configuration
           sudo sshd -t
+
+          # Restart SSH
           sudo systemctl restart ssh
 
-          echo "Runner SSH server started."
+          echo
+          echo "SSH server configured."
+          echo
+          echo "User:"
+          id runnerdebug
 
+          echo
+          echo "Groups:"
+          groups runnerdebug
+
+      # ============================================================
+      # 3. Verify local SSH
+      # ============================================================
+      - name: Test runner SSH locally
+        run: |
+          echo "=========================================="
+          echo "TESTING LOCAL SSH"
+          echo "=========================================="
+
+          sshpass -p '33335555' \
+            ssh \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              -o PreferredAuthentications=password \
+              -o PubkeyAuthentication=no \
+              runnerdebug@127.0.0.1 \
+              'echo "SSH OK"; whoami; uname -m'
+
+      # ============================================================
+      # 4. Create reverse SSH tunnel through VPS
+      # ============================================================
       - name: Create reverse SSH tunnel
         env:
           VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
         run: |
           set -e
 
+          echo "=========================================="
+          echo "CREATING REVERSE SSH TUNNEL"
+          echo "=========================================="
+
           sshpass -p "$VPS_PASSWORD" \
             ssh \
               -o StrictHostKeyChecking=no \
               -o UserKnownHostsFile=/dev/null \
+              -o PreferredAuthentications=password \
+              -o PubkeyAuthentication=no \
               -o ServerAliveInterval=30 \
               -o ServerAliveCountMax=3 \
               -o ExitOnForwardFailure=yes \
@@ -63,49 +124,97 @@ jobs:
             exit 1
           fi
 
+      # ============================================================
+      # 5. Verify runner architecture + tunnel
+      # ============================================================
+      - name: Verify runner
+        run: |
+          echo
+          echo "=========================================="
+          echo "ARM64 RUNNER"
+          echo "=========================================="
+
+          echo
+          echo "Architecture:"
+          uname -m
+
+          echo
+          echo "Kernel:"
+          uname -a
+
+          echo
+          echo "KVM:"
+          if [ -e /dev/kvm ]; then
+            echo "AVAILABLE"
+            ls -la /dev/kvm
+          else
+            echo "NOT AVAILABLE"
+          fi
+
+          echo
+          echo "Tunnel process:"
+          ps aux | grep '[s]sh.*2222' || true
+
+      # ============================================================
+      # 6. Connection information
+      # ============================================================
       - name: Connection information
         run: |
           echo
           echo "=============================================="
-          echo "       ARM64 GITHUB RUNNER SSH"
+          echo "        ARM64 GITHUB RUNNER SSH"
           echo "=============================================="
           echo
           echo "Architecture:"
           uname -m
           echo
           echo "KVM:"
-          if [ -e /dev/kvm ]; then
-            echo "AVAILABLE"
-          else
-            echo "NOT AVAILABLE"
-          fi
+          test -e /dev/kvm && echo "AVAILABLE" || echo "NOT AVAILABLE"
           echo
-          echo "Connect from your PC:"
-          echo
+          echo "SSH:"
           echo "ssh -p 2222 runnerdebug@103.214.23.62"
           echo
-          echo "Temporary runner password:"
-          echo "$RUNNER_PASSWORD"
+          echo "Username:"
+          echo "runnerdebug"
+          echo
+          echo "Password:"
+          echo "33335555"
+          echo
+          echo "Sudo:"
+          echo "sudo su"
           echo
           echo "=============================================="
+          echo
+          echo "KEEP THIS JOB RUNNING WHILE CONNECTED."
+          echo "=============================================="
 
+      # ============================================================
+      # 7. Keep runner alive
+      # ============================================================
       - name: Keep runner alive
         run: |
           echo "Runner is ready."
           echo "Waiting for SSH session..."
 
           while true; do
+
             if ! kill -0 "$(cat /tmp/tunnel.pid)" 2>/dev/null; then
-              echo "❌ Reverse tunnel disconnected."
+              echo "❌ Reverse SSH tunnel disconnected."
               exit 1
             fi
 
             sleep 30
+
           done
 
+      # ============================================================
+      # 8. Cleanup
+      # ============================================================
       - name: Cleanup
         if: always()
         run: |
+          echo "Cleaning up..."
+
           if [ -f /tmp/tunnel.pid ]; then
             kill "$(cat /tmp/tunnel.pid)" 2>/dev/null || true
           fi
